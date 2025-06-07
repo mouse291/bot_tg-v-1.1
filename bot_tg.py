@@ -1,42 +1,49 @@
 import logging
-from aiogram import Bot, Dispatcher, executor, types
+import os
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils.executor import start_webhook
+from dotenv import load_dotenv
 import requests
 
-# Настройки
-TELEGRAM_TOKEN = '8171020038:AAGAVYTjsQ7ISn01gTZhykY6c2oShgbpS2I'
-OPENROUTER_API_KEY = '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'
-DEEPSEEK_API_KEY = 'sk-323aec6cc73a49e29229b4c70a87b63a'
+# Загрузка переменных из .env
+load_dotenv()
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+
+# Настройки для webhook
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # Пример: https://your-app-name.onrender.com
+WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+WEBAPP_HOST = "0.0.0.0"
+WEBAPP_PORT = int(os.getenv("PORT", 8000))
 
 # Инициализация
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot)
 
-# URL и заголовки для OpenRouter
+# URL и заголовки для моделей
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+
 openrouter_headers = {
     "Authorization": f"Bearer {OPENROUTER_API_KEY}",
     "Content-Type": "application/json"
 }
-
-# URL и заголовки для DeepSeek
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 deepseek_headers = {
     "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
     "Content-Type": "application/json"
 }
 
 
-# Запрос к нейросети
+# Функция запроса к модели
 async def ask_model(prompt, use_deepseek=False):
-    if use_deepseek:
-        url = DEEPSEEK_URL
-        headers = deepseek_headers
-        model = "deepseek-chat"
-    else:
-        url = OPENROUTER_URL
-        headers = openrouter_headers
-        model = "openai/gpt-3.5-turbo"
+    headers = deepseek_headers if use_deepseek else openrouter_headers
+    url = DEEPSEEK_URL if use_deepseek else OPENROUTER_URL
+    model = "deepseek-chat" if use_deepseek else "openai/gpt-3.5-turbo"
 
     payload = {
         "model": model,
@@ -45,40 +52,70 @@ async def ask_model(prompt, use_deepseek=False):
     }
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=20)
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        r = requests.post(url, headers=headers, json=payload, timeout=20)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
     except Exception as e:
         logging.error(f"❌ Ошибка при запросе к API: {e}")
         return "Ошибка при подключении к нейросети."
 
 
-# Обработка кнопки
+# Команда /start
 @dp.message_handler(commands=["start"])
-async def start(message: types.Message):
+async def cmd_start(message: types.Message):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("💡 Спросить через OpenRouter", "🧠 Спросить через DeepSeek")
-    await message.answer("Выбери режим:", reply_markup=kb)
+    kb.add("💡 OpenRouter", "🧠 DeepSeek")
+    await message.answer("Выбери модель:", reply_markup=kb)
 
 
-# Основная логика
-@dp.message_handler(lambda m: m.text.startswith("💡") or m.text.startswith("🧠"))
-async def process_question(message: types.Message):
-    await message.answer("Введите ваш вопрос:")
+# Переменная режима
+user_modes = {}
 
 
-# Ответ на сообщение
-@dp.message_handler()
-async def handle_message(message: types.Message):
-    if message.reply_to_message and message.reply_to_message.text.startswith("Введите ваш вопрос"):
-        use_deepseek = message.reply_to_message.text.startswith("🧠")
+@dp.message_handler(lambda m: m.text in ["💡 OpenRouter", "🧠 DeepSeek"])
+async def choose_mode(message: types.Message):
+    use_ds = message.text.startswith("🧠")
+    user_modes[message.from_user.id] = use_ds
+    await message.answer("Теперь отправьте свой вопрос.")
+
+
+# Режим логов по паролю
+@dp.message_handler(lambda m: m.text.startswith("/logs"))
+async def get_logs(message: types.Message):
+    parts = message.text.split()
+    if len(parts) == 2 and parts[1] == ADMIN_PASSWORD:
+        await message.answer("Логов нет или режим логов отключен (пока заглушка).")
     else:
-        use_deepseek = False
-    await message.answer("🔄 Думаю...")
-    answer = await ask_model(message.text, use_deepseek=use_deepseek)
-    await message.answer(answer)
+        await message.answer("Неверный пароль.")
+
+
+# Обработка текстовых сообщений
+@dp.message_handler()
+async def main_handler(message: types.Message):
+    use_ds = user_modes.get(message.from_user.id, False)
+    await message.answer("🕐 Думаю...")
+    reply = await ask_model(message.text, use_deepseek=use_ds)
+    await message.answer(reply)
+
+
+# Webhook-режим запуска
+async def on_startup(dispatcher):
+    await bot.set_webhook(WEBHOOK_URL)
+    logging.info("🚀 Webhook установлен")
+
+
+async def on_shutdown(dispatcher):
+    await bot.delete_webhook()
+    logging.info("🛑 Webhook удалён")
 
 
 if __name__ == '__main__':
-    print("🤖 ГОЙДААА!")
-    executor.start_polling(dp, skip_updates=True)
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        host=WEBAPP_HOST,
+        port=WEBAPP_PORT,
+    )
+
