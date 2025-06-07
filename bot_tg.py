@@ -93,7 +93,7 @@ async def get_logs(message: types.Message):
 @dp.message_handler()
 async def main_handler(message: types.Message):
     use_ds = user_modes.get(message.from_user.id, False)
-    await message.answer("🕐 Думаю...")
+    await message.answer("🕐 Кумекаю...")
     reply = await ask_model(message.text, use_deepseek=use_ds)
     await message.answer(reply)
 
